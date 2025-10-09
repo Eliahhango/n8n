@@ -38,7 +38,7 @@ import {
 
 import BinaryDataDisplay from '@/components/BinaryDataDisplay.vue';
 import NodeErrorView from '@/components/Error/NodeErrorView.vue';
-import JsonEditor from '@/components/JsonEditor/JsonEditor.vue';
+import JsonEditor from '@/features/editors/components/JsonEditor/JsonEditor.vue';
 
 import RunDataPinButton from '@/components/RunDataPinButton.vue';
 import { useExternalHooks } from '@/composables/useExternalHooks';
@@ -53,7 +53,7 @@ import { dataPinningEventBus, ndvEventBus } from '@/event-bus';
 import { useNDVStore } from '@/stores/ndv.store';
 import { useNodeTypesStore } from '@/stores/nodeTypes.store';
 import { useRootStore } from '@n8n/stores/useRootStore';
-import { useSourceControlStore } from '@/stores/sourceControl.store';
+import { useSourceControlStore } from '@/features/sourceControl.ee/sourceControl.store';
 import { useWorkflowsStore } from '@/stores/workflows.store';
 import { executionDataToJson } from '@/utils/nodeTypesUtils';
 import { getGenericHints } from '@/utils/nodeViewUtils';
@@ -61,6 +61,22 @@ import { searchInObject } from '@/utils/objectUtils';
 import { clearJsonKey, isEmpty, isPresent } from '@/utils/typesUtils';
 import isEqual from 'lodash/isEqual';
 import isObject from 'lodash/isObject';
+import { storeToRefs } from 'pinia';
+import { useRoute } from 'vue-router';
+import { useSchemaPreviewStore } from '@/stores/schemaPreview.store';
+import { asyncComputed } from '@vueuse/core';
+import ViewSubExecution from './ViewSubExecution.vue';
+import RunDataItemCount from '@/components/RunDataItemCount.vue';
+import RunDataDisplayModeSelect from '@/components/RunDataDisplayModeSelect.vue';
+import RunDataPaginationBar from '@/components/RunDataPaginationBar.vue';
+import { parseAiContent } from '@/utils/aiUtils';
+import { usePostHog } from '@/stores/posthog.store';
+import { I18nT } from 'vue-i18n';
+import RunDataBinary from '@/components/RunDataBinary.vue';
+import { hasTrimmedRunData } from '@/utils/executionUtils';
+import NDVEmptyState from '@/components/NDVEmptyState.vue';
+import { type SearchShortcut } from '@/features/canvas/canvas.types';
+
 import {
 	N8nBlockUi,
 	N8nButton,
@@ -75,23 +91,6 @@ import {
 	N8nText,
 	N8nTooltip,
 } from '@n8n/design-system';
-import { storeToRefs } from 'pinia';
-import { useRoute } from 'vue-router';
-import { useUIStore } from '@/stores/ui.store';
-import { useSchemaPreviewStore } from '@/stores/schemaPreview.store';
-import { asyncComputed } from '@vueuse/core';
-import ViewSubExecution from './ViewSubExecution.vue';
-import RunDataItemCount from '@/components/RunDataItemCount.vue';
-import RunDataDisplayModeSelect from '@/components/RunDataDisplayModeSelect.vue';
-import RunDataPaginationBar from '@/components/RunDataPaginationBar.vue';
-import { parseAiContent } from '@/utils/aiUtils';
-import { usePostHog } from '@/stores/posthog.store';
-import { I18nT } from 'vue-i18n';
-import RunDataBinary from '@/components/RunDataBinary.vue';
-import { hasTrimmedRunData } from '@/utils/executionUtils';
-import NDVEmptyState from '@/components/NDVEmptyState.vue';
-import { type SearchShortcut } from '@/types';
-
 const LazyRunDataTable = defineAsyncComponent(
 	async () => await import('@/components/RunDataTable.vue'),
 );
@@ -234,7 +233,6 @@ const ndvStore = useNDVStore();
 const workflowsStore = useWorkflowsStore();
 const sourceControlStore = useSourceControlStore();
 const rootStore = useRootStore();
-const uiStore = useUIStore();
 const schemaPreviewStore = useSchemaPreviewStore();
 const posthogStore = usePostHog();
 
@@ -1664,6 +1662,18 @@ defineExpose({ enterEditMode });
 				<N8nText>{{ executingMessage }}</N8nText>
 			</div>
 
+			<div
+				v-else-if="isTrimmedManualExecutionDataItem"
+				:class="[$style.center, $style.executingMessage]"
+			>
+				<div v-if="!props.compact" :class="$style.spinner">
+					<N8nSpinner type="ring" />
+				</div>
+				<N8nText>
+					{{ i18n.baseText('runData.trimmedData.loading') }}
+				</N8nText>
+			</div>
+
 			<div v-else-if="editMode.enabled" :class="$style.editMode">
 				<div :class="[$style.editModeBody, 'ignore-key-press-canvas']">
 					<JsonEditor
@@ -1718,24 +1728,6 @@ defineExpose({ enterEditMode });
 					</N8nLink>
 				</N8nText>
 			</div>
-
-			<div
-				v-else-if="isTrimmedManualExecutionDataItem && uiStore.isProcessingExecutionResults"
-				:class="$style.center"
-			>
-				<div :class="$style.spinner"><N8nSpinner type="ring" /></div>
-				<N8nText color="text-dark" size="large">
-					{{ i18n.baseText('runData.trimmedData.loading') }}
-				</N8nText>
-			</div>
-
-			<NDVEmptyState
-				v-else-if="isTrimmedManualExecutionDataItem"
-				:class="$style.center"
-				:title="i18n.baseText('runData.trimmedData.title')"
-			>
-				{{ i18n.baseText('runData.trimmedData.message') }}
-			</NDVEmptyState>
 
 			<div v-else-if="hasNodeRun && isArtificialRecoveredEventItem" :class="$style.center">
 				<slot name="recovered-artificial-output-data"></slot>
@@ -1964,7 +1956,7 @@ defineExpose({ enterEditMode });
 
 <style lang="scss" module>
 .infoIcon {
-	color: var(--color-foreground-dark);
+	color: var(--color--foreground--shade-1);
 }
 
 .center {
@@ -1997,13 +1989,14 @@ defineExpose({ enterEditMode });
 	border-top: 0;
 	border-left: 0;
 	border-right: 0;
+	height: 40px;
 }
 
 .header {
 	display: flex;
 	align-items: center;
 	margin-bottom: var(--ndv-spacing);
-	padding: var(--ndv-spacing) var(--ndv-spacing) 0 var(--ndv-spacing);
+	padding: var(--ndv-spacing) var(--spacing-3xs) 0 var(--ndv-spacing);
 	position: relative;
 	overflow-x: auto;
 	overflow-y: hidden;
@@ -2164,7 +2157,7 @@ defineExpose({ enterEditMode });
 	margin-bottom: var(--ndv-spacing);
 
 	* {
-		color: var(--color-primary);
+		color: var(--color--primary);
 		min-height: 40px;
 		min-width: 40px;
 	}
@@ -2270,12 +2263,12 @@ defineExpose({ enterEditMode });
 
 .executingMessage {
 	.compact & {
-		color: var(--color-text-light);
+		color: var(--color--text--tint-1);
 	}
 }
 
 .resetCollapseButton {
-	color: var(--color-foreground-xdark);
+	color: var(--color--foreground--shade-2);
 }
 
 @container (max-width: 240px) {
